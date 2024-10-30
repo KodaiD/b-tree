@@ -47,6 +47,320 @@ class NodeFixLen
 {
  public:
   /*####################################################################################
+   * Mutext types
+   *##################################################################################*/
+
+  class NodeMutex
+  {
+   private:
+    struct LockWord {
+      union {
+        uint64_t obj_;
+        struct {
+          uint16_t slock_ : 16;
+          bool sixlock_ : 1;
+          bool xlock_ : 1;
+          uint64_t version_ : 46;
+        };
+      };
+
+      LockWord() : obj_(0) {}
+    };
+
+    std::atomic<uint64_t> lock_word_;
+
+   public:
+    NodeMutex() : lock_word_{0} {}
+
+    void
+    LockS()
+    {
+      LockWord expected, desired;
+      expected.obj_ = lock_word_.load(std::memory_order_acquire);
+      while (true) {
+        if (expected.xlock_) {
+          expected.obj_ = lock_word_.load(std::memory_order_acquire);
+          continue;
+        }
+        desired.obj_ = expected.obj_;
+        desired.slock_++;
+        if (lock_word_.compare_exchange_weak(expected.obj_, desired.obj_,
+                                             std::memory_order_acquire)) {
+          return;
+        }
+      }
+    }
+
+    void
+    LockSIX()
+    {
+      LockWord expected, desired;
+      expected.obj_ = lock_word_.load(std::memory_order_acquire);
+      while (true) {
+        if (expected.sixlock_ || expected.xlock_) {
+          expected.obj_ = lock_word_.load(std::memory_order_acquire);
+          continue;
+        }
+        desired.obj_ = expected.obj_;
+        desired.sixlock_ = 1;
+        if (lock_word_.compare_exchange_weak(expected.obj_, desired.obj_,
+                                             std::memory_order_acquire)) {
+          return;
+        }
+      }
+    }
+
+    void
+    LockX()
+    {
+      LockWord expected, desired;
+      expected.obj_ = lock_word_.load(std::memory_order_acquire);
+      while (true) {
+        if (expected.slock_ > 0 || expected.sixlock_ || expected.xlock_) {
+          expected.obj_ = lock_word_.load(std::memory_order_acquire);
+          continue;
+        }
+        desired.obj_ = expected.obj_;
+        desired.xlock_ = 1;
+        if (lock_word_.compare_exchange_weak(expected.obj_, desired.obj_,
+                                             std::memory_order_acquire)) {
+          return;
+        }
+      }
+    }
+
+    bool
+    TryLockS()
+    {
+      LockWord expected, desired;
+      expected.obj_ = lock_word_.load(std::memory_order_acquire);
+      while (true) {
+        if (expected.xlock_) {
+          return false;
+        }
+        desired.obj_ = expected.obj_;
+        desired.slock_++;
+        if (lock_word_.compare_exchange_weak(expected.obj_, desired.obj_,
+                                             std::memory_order_acquire)) {
+          return true;
+        }
+      }
+    }
+
+    bool
+    TryLockSIX()
+    {
+      LockWord expected, desired;
+      expected.obj_ = lock_word_.load(std::memory_order_acquire);
+      while (true) {
+        if (expected.sixlock_ || expected.xlock_) {
+          return false;
+        }
+        desired.obj_ = expected.obj_;
+        desired.sixlock_ = 1;
+        if (lock_word_.compare_exchange_weak(expected.obj_, desired.obj_,
+                                             std::memory_order_acquire)) {
+          return true;
+        }
+      }
+    }
+
+    bool
+    TryLockX()
+    {
+      LockWord expected, desired;
+      expected.obj_ = lock_word_.load(std::memory_order_acquire);
+      while (true) {
+        if (expected.xlock_) {
+          expected.obj_ = lock_word_.load(std::memory_order_acquire);
+          continue;
+        }
+        if (expected.sixlock_) {
+          return false;
+        }
+        if (expected.slock_ > 0) {
+          return false;
+        }
+        desired.obj_ = expected.obj_;
+        desired.xlock_ = 1;
+        if (lock_word_.compare_exchange_weak(expected.obj_, desired.obj_,
+                                             std::memory_order_acquire)) {
+          return true;
+        }
+      }
+    }
+
+    bool
+    TryLockS(uint64_t ver)
+    {
+      LockWord expected, desired;
+      expected.obj_ = lock_word_.load(std::memory_order_acquire);
+      while (true) {
+        if (expected.version_ != (ver >> 18)) {
+          return false;
+        }
+        if (expected.xlock_) {
+          return false;
+        }
+        desired.obj_ = expected.obj_;
+        desired.slock_++;
+        if (lock_word_.compare_exchange_weak(expected.obj_, desired.obj_,
+                                             std::memory_order_acquire)) {
+          return true;
+        }
+      }
+    }
+
+    bool
+    TryLockSIX(uint64_t ver)
+    {
+      LockWord expected, desired;
+      expected.obj_ = lock_word_.load(std::memory_order_acquire);
+      while (true) {
+        if (expected.version_ != (ver >> 18)) {
+          return false;
+        }
+        if (expected.sixlock_ || expected.xlock_) {
+          return false;
+        }
+        desired.obj_ = expected.obj_;
+        desired.sixlock_ = 1;
+        if (lock_word_.compare_exchange_weak(expected.obj_, desired.obj_,
+                                             std::memory_order_acquire)) {
+          return true;
+        }
+      }
+    }
+
+    bool
+    TryLockX(uint64_t ver)
+    {
+      LockWord expected, desired;
+      expected.obj_ = lock_word_.load(std::memory_order_acquire);
+      while (true) {
+        if (expected.version_ != (ver >> 18)) {
+          return false;
+        }
+        if (expected.xlock_) {
+          expected.obj_ = lock_word_.load(std::memory_order_acquire);
+          continue;
+        }
+        if (expected.sixlock_) {
+          return false;
+        }
+        if (expected.slock_ > 0) {
+          return false;
+        }
+        desired.obj_ = expected.obj_;
+        desired.xlock_ = 1;
+        if (lock_word_.compare_exchange_weak(expected.obj_, desired.obj_,
+                                             std::memory_order_acquire)) {
+          return true;
+        }
+      }
+    }
+
+    void
+    UpgradeToX()
+    {
+      LockWord expected, desired;
+      expected.obj_ = lock_word_.load(std::memory_order_acquire);
+      while (true) {
+        if (expected.slock_ > 0) {
+          expected.obj_ = lock_word_.load(std::memory_order_acquire);
+          continue;
+        }
+        desired.obj_ = expected.obj_;
+        desired.sixlock_ = 0;
+        desired.xlock_ = 1;
+        if (lock_word_.compare_exchange_weak(expected.obj_, desired.obj_,
+                                             std::memory_order_acquire)) {
+          return;
+        }
+      }
+    }
+
+    bool
+    TryUpgradeFromSToX()
+    {
+      LockWord expected, desired;
+      expected.obj_ = lock_word_.load(std::memory_order_acquire);
+      while (true) {
+        if (expected.slock_ > 1 || expected.sixlock_) {
+          return false;
+        }
+        desired.obj_ = expected.obj_;
+        desired.slock_ = 0;
+        desired.xlock_ = 1;
+        if (lock_word_.compare_exchange_weak(expected.obj_, desired.obj_,
+                                             std::memory_order_acquire)) {
+          return true;
+        }
+      }
+    }
+
+    void
+    DowngradeFromXToS()
+    {
+      LockWord desired;
+      desired.obj_ = lock_word_.load(std::memory_order_relaxed);
+      desired.slock_ = 1;
+      desired.xlock_ = 0;
+      desired.version_++;
+      lock_word_.store(desired.obj_, std::memory_order_release);
+    }
+
+    void
+    UnlockS()
+    {
+      lock_word_.fetch_sub(1, std::memory_order_release);
+    }
+
+    void
+    UnlockSIX()
+    {
+      LockWord desired;
+      desired.obj_ = lock_word_.load(std::memory_order_relaxed);
+      desired.sixlock_ = 0;
+      lock_word_.store(desired.obj_, std::memory_order_release);
+    }
+
+    uint64_t
+    UnlockX()
+    {
+      LockWord desired;
+      desired.obj_ = lock_word_.load(std::memory_order_relaxed);
+      desired.xlock_ = 0;
+      desired.version_++;
+      lock_word_.store(desired.obj_, std::memory_order_release);
+      return desired.obj_;
+    }
+
+    uint64_t
+    GetVersion() const
+    {
+      LockWord expected;
+      expected.obj_ = lock_word_.load(std::memory_order_acquire);
+      while (expected.xlock_) {
+        expected.obj_ = lock_word_.load(std::memory_order_acquire);
+      }
+      expected.slock_ = 0;
+      expected.sixlock_ = 0;
+      return expected.obj_;
+    }
+
+    bool
+    HasSameVersion(uint64_t ver) const
+    {
+      LockWord desired;
+      desired.obj_ = lock_word_.load(std::memory_order_acquire);
+      desired.slock_ = 0;
+      desired.sixlock_ = 0;
+      return (ver == desired.obj_);
+    }
+  };
+
+  /*####################################################################################
    * Type aliases
    *##################################################################################*/
 
@@ -1153,6 +1467,68 @@ class NodeFixLen
     return child;
   }
 
+  auto
+  CheckLeafNodeStatus(const size_t new_rec_len)  //
+      -> NodeRC
+  {
+    NodeRC rc{};
+
+    if (is_removed_) {
+      return kNeedRetry;
+    }
+
+    if (GetUsedSize() + new_rec_len > kPageSize - kHeaderLen) {
+      return kNeedSplit;
+    }
+
+    if (GetUsedSize() < kMinUsedSpaceSize) {
+      return kNeedMerge;
+    }
+
+    return kCompleted;
+  }
+
+  void
+  InsertRecordForIntoLeafNode(  //
+      const Key &key,
+      const void *payload,
+      const size_t pos)
+  {
+    const auto move_num = record_count_ - pos;
+
+    // insert a new key
+    memmove(&(keys_[pos + 1]), &(keys_[pos]), kKeyLen * (move_num + has_low_key_ + has_high_key_));
+    keys_[pos] = key;
+
+    // insert a new payload
+    const auto top_offset = kPageSize - block_size_;
+    const auto move_size = pay_len_ * move_num;
+    memmove(ShiftAddr(this, top_offset - pay_len_), ShiftAddr(this, top_offset), move_size);
+    SetPayload(top_offset + move_size, payload);
+
+    // update header information
+    ++record_count_;
+    block_size_ += pay_len_;
+  }
+
+  bool
+  TryLockXForLeafNode()
+  {
+    return mutex_.TryLockX();
+  }
+
+  bool
+  TryLockXForLeafNode(uint64_t ver)
+  {
+    return mutex_.TryLockX(ver);
+  }
+
+  void
+  UnlockXForLeafNode()
+  {
+    mutex_.UnlockX();
+  }
+
  private:
   /*####################################################################################
    * Internal constants
@@ -1456,7 +1832,7 @@ class NodeFixLen
   uint16_t pay_len_{kPtrLen};
 
   /// a lock for concurrency controls.
-  ::dbgroup::lock::OptimisticLock mutex_{};
+  NodeMutex mutex_{};
 
   /// the pointer to the next node.
   Node *next_{nullptr};
