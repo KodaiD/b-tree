@@ -363,6 +363,80 @@ class BTree
     return stat_data;
   }
 
+  [[nodiscard]] auto
+  MySearchLeafNodeForRead(const Key &key)  //
+      -> Node_t *
+  {
+    auto *node = root_.load(std::memory_order_acquire);
+    while (true) {
+      Node_t *parent{}, *child{};
+      uint64_t ver{};
+      while (node->IsInner()) {
+        auto result = node->SearchChild(key);
+        std::tie(ver, child) = result;
+        if (child == nullptr) {
+          node = root_.load(std::memory_order_acquire);
+          continue;
+        }
+        parent = node;
+        node = child;
+      }
+      node->LockS();
+      if (parent->HasSameVersion(ver)) break;
+      node->UnlockS();
+      node = parent;
+    }
+    return node;
+  }
+
+  [[nodiscard]] auto
+  MySearchLeafNodeForWrite(const Key &key)  //
+      -> std::tuple<Node_t *, Node_t *>
+  {
+    Node_t *parent{};
+    auto [node, ver] = GetRootForWrite(key);
+    while (true) {
+      while (node->IsInner()) {
+        auto [pos, child] = node->SearchChild(key, ver, kMaxKeyLen + kMaxPayLen);
+        if (child == nullptr) {
+          std::tie(node, ver) = GetRootForWrite(key);
+          continue;
+        }
+
+        // perform internal SMOs eagerly
+        auto [rc, child_ver] = child->CheckNodeStatus(kMaxKeyLen + kMaxPayLen);
+        if (rc == kNeedRetry) continue;  // the child node was removed
+        if (rc == kNeedSplit) {
+          if (!TrySplit(key, child, child_ver, node, ver, pos)) continue;
+          // a valid child node and its version value are selected in TrySplit
+        } else if (rc == kNeedMerge) {
+          if (!TryMerge(child, child_ver, node, ver, pos)) continue;
+          // a valid version value is selected in TryMerge
+        }
+
+        // go down to the next level
+        parent = node;
+        node = child;
+        ver = child_ver;
+      }
+      parent->LockX();
+      auto status = node->TryLockXwithVer(ver);
+      if (status == NodeMutex::LockStatus::SUCCESS) {
+        break;
+      } else if (status == NodeMutex::LockStatus::VERSION_CHANGED) {
+        parent->UnlockX();
+        node = parent;
+      } else if (status == NodeMutex::LockStatus::SHLOCKED) {
+        parent->UnlockX();
+        parent = nullptr;
+        node = nullptr;
+        break;
+      }
+    }
+
+    return parent, node;
+  }
+
  private:
   /*####################################################################################
    * Internal constants

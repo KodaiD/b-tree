@@ -25,6 +25,7 @@
 #include <vector>
 
 // external sources
+#include "../external/node_mutex/include/node_mutex.hpp"
 #include "lock/optimistic_lock.hpp"
 
 // local sources
@@ -519,6 +520,33 @@ class NodeFixLen
     }
 
     return child;
+  }
+
+  [[nodiscard]] auto
+  MySearchChild(const Key &key)  //
+      -> std::tuple<Node *, uint64_t>
+  {
+    Node *child{};
+    uint64_t ver{};
+    while (true) {
+      ver = mutex_.GetVersion();
+
+      // check the current node is not removed and has a target key
+      if (is_removed_ > 0 || !CompHighKey(key)) {
+        if (!mutex_.HasSameVersion(ver)) continue;
+        child = nullptr;  // retry from a root node
+        ver = 0;
+        break;
+      }
+
+      // search a child node
+      const auto pos = SearchRecord(key).second;
+      child = GetPayload<Node *>(pos);
+
+      if (mutex_.HasSameVersion(ver)) break;
+    }
+
+    return child, ver;
   }
 
   /**
@@ -1456,7 +1484,7 @@ class NodeFixLen
   uint16_t pay_len_{kPtrLen};
 
   /// a lock for concurrency controls.
-  ::dbgroup::lock::OptimisticLock mutex_{};
+  NodeMutex mutex_{};
 
   /// the pointer to the next node.
   Node *next_{nullptr};

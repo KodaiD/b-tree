@@ -7,3 +7,6 @@
 [submodule "external/memory-manager"]
 	path = external/memory-manager
 	url = https://github.com/dbgroup-nagoya-u/memory-manager.git
+[submodule "external/node_mutex"]
+	path = external/node_mutex
+	url = git@github.com:KodaiD/node_mutex.git
