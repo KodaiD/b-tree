@@ -201,6 +201,28 @@ class NodeFixLen
     return {node, std::move(sep_key), kKeyLen, ver};
   }
 
+  auto
+  GetValidSplitNode2(  //
+      const Key &key,
+      Node *r_node)  //
+      -> std::tuple<Node *, Key, size_t, uint64_t>
+  {
+    Node *node{};
+    uint64_t ver{};
+    const auto sep_key = GetHighKey();
+    if (!Comp{}(key, sep_key)) {
+      node = r_node;
+      // ver = r_node->mutex_.UnlockX();
+      mutex_.UnlockX();
+    } else {
+      node = this;
+      r_node->mutex_.UnlockX();
+      // ver = mutex_.UnlockX();
+    }
+
+    return {node, std::move(sep_key), kKeyLen, 0};
+  }
+
   /**
    * @brief Set the length of payloads for leaf read/write operations.
    *
@@ -922,6 +944,33 @@ class NodeFixLen
     mutex_.UnlockX();
   }
 
+  void
+  InsertChild2(  //
+      const Node *r_node,
+      const Key &sep_key,
+      [[maybe_unused]] const size_t sep_key_len,
+      const size_t pos)  //
+  {
+    // insert a right child
+    const auto move_num = record_count_ - 1 - pos;
+    const auto move_size = kPtrLen * move_num;
+    const auto top_offset = kPageSize - block_size_;
+
+    memmove(ShiftAddr(this, top_offset - kPtrLen), ShiftAddr(this, top_offset), move_size);
+    SetPayload(top_offset + move_size, &r_node);
+
+    // insert a separator key
+    memmove(&(keys_[pos + 2]), &(keys_[pos + 1]),
+            kKeyLen * (move_num + has_low_key_ + has_high_key_));
+    keys_[pos + 1] = sep_key;
+
+    // update header information
+    ++record_count_;
+    block_size_ += kPtrLen;
+
+    mutex_.UnlockX();
+  }
+
   /**
    * @brief Delete a child node from this node.
    *
@@ -980,6 +1029,41 @@ class NodeFixLen
     r_node->has_high_key_ = has_high_key_;
 
     mutex_.UpgradeToX();  // upgrade the lock to modify the left node
+
+    // update a header
+    block_size_ -= r_node->block_size_;
+    record_count_ = l_count;
+    if (!is_inner_) {
+      next_ = r_node;
+    }
+    has_high_key_ = 1;
+
+    // update lowest/highest keys
+    keys_[l_count + has_low_key_] = keys_[record_count_ + has_high_key_];  // a lowest key
+    keys_[l_count] = sep_key;                                              // a highest key
+  }
+
+  void
+  Split2(Node *r_node)
+  {
+    const auto l_count = record_count_ / 2;
+    const auto r_count = record_count_ - l_count;
+
+    // copy right half records to a right node
+    r_node->mutex_.LockX();
+    r_node->pay_len_ = pay_len_;
+    auto r_offset = r_node->CopyRecordsFrom(this, l_count, record_count_, kPageSize);
+    const auto &sep_key = r_node->keys_[0];
+    r_node->keys_[r_count] = keys_[record_count_];     // a highest key
+    r_node->keys_[r_count + has_high_key_] = sep_key;  // a lowest key
+
+    // update a right header
+    r_node->block_size_ = kPageSize - r_offset;
+    if (!is_inner_) {
+      r_node->next_ = next_;
+    }
+    r_node->has_low_key_ = 1;
+    r_node->has_high_key_ = has_high_key_;
 
     // update a header
     block_size_ -= r_node->block_size_;
@@ -1153,7 +1237,7 @@ class NodeFixLen
     return child;
   }
 
- private:
+ public:
   /*####################################################################################
    * Internal constants
    *##################################################################################*/

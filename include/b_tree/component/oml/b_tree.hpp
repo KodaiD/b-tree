@@ -363,7 +363,7 @@ class BTree
     return stat_data;
   }
 
- private:
+ public:
   /*####################################################################################
    * Internal constants
    *##################################################################################*/
@@ -541,6 +541,41 @@ class BTree
     }
 
     return node;
+  }
+
+  auto
+  SearchLeafNodeForWrite2(const Key &key)  //
+      -> std::tuple<Node_t *, Node_t *, uint64_t, size_t>
+  {
+    auto [node, ver] = GetRootForWrite(key);
+    while (node->IsInner()) {
+      auto [pos, child] = node->SearchChild(key, ver, kMaxKeyLen + kMaxPayLen);
+      if (child == nullptr) {
+        std::tie(node, ver) = GetRootForWrite(key);
+        continue;
+      }
+
+      if (!child->IsInner()) {
+        return {node, child, ver, pos};
+      }
+
+      // perform internal SMOs eagerly
+      auto [rc, child_ver] = child->CheckNodeStatus(kMaxKeyLen + kMaxPayLen);
+      if (rc == kNeedRetry) continue;  // the child node was removed
+      if (rc == kNeedSplit) {
+        if (!TrySplit(key, child, child_ver, node, ver, pos)) continue;
+        // a valid child node and its version value are selected in TrySplit
+      } else if (rc == kNeedMerge) {
+        if (!TryMerge(child, child_ver, node, ver, pos)) continue;
+        // a valid version value is selected in TryMerge
+      }
+
+      // go down to the next level
+      node = child;
+      ver = child_ver;
+    }
+
+    return {nullptr, node, ver, 0};
   }
 
   /**
