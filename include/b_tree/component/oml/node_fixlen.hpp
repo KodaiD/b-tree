@@ -47,7 +47,7 @@ class NodeFixLen
 {
  public:
   class NodeMutex {
-    private:
+    public:
       struct LockWord {
           union {
               uint64_t obj_;
@@ -341,6 +341,12 @@ class NodeFixLen
           desired.slock_ = 0;
           desired.sixlock_ = 0;
           return (ver == desired.obj_);
+      }
+
+      LockWord GetLockWord() const {
+          LockWord lock_word;
+          lock_word.obj_ = lock_word_.load(std::memory_order_acquire);
+          return lock_word;
       }
   };
 
