@@ -19,6 +19,7 @@
 
 // C++ standard libraries
 #include <future>
+#include <map>
 #include <optional>
 #include <thread>
 #include <vector>
@@ -30,6 +31,7 @@
 #include "b_tree/component/oml/node_fixlen.hpp"
 #include "b_tree/component/oml/node_varlen.hpp"
 #include "b_tree/component/optimistic_record_iterator.hpp"
+#include "b_tree/component/record_iterator.hpp"
 
 namespace dbgroup::index::b_tree::component::oml
 {
@@ -58,6 +60,7 @@ class BTree
   using Node_t = std::conditional_t<kUseVarLenLayout, NodeVarLen_t, NodeFixLen_t>;
   using BTree_t = BTree<Key, Payload, Comp, kUseVarLenLayout>;
   using RecordIterator_t = OptimisticRecordIterator<BTree_t>;
+  using PessimisticRecordIterator_t = RecordIterator<BTree_t>;
   using ScanKey = std::optional<std::tuple<const Key &, size_t, bool>>;
   using GC_t = ::dbgroup::memory::EpochBasedGC<Page>;
 
@@ -139,6 +142,29 @@ class BTree
     return std::nullopt;
   }
 
+  auto
+  PessimisticRead(  //
+      const Key &key,
+      [[maybe_unused]] const size_t key_len)  //
+      -> std::optional<Payload>
+  {
+    [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
+
+    auto *node = SearchLeafNodeForRead(key);
+    Payload payload{};
+    while (true) {
+      Node_t::CheckKeyRangeAndLockForRead(node, key);
+      const auto [existence, pos] = node->SearchRecord(key);
+      if (existence == kKeyAlreadyInserted) {
+        memcpy(&payload, node->GetPayloadAddr(pos), sizeof(Payload));
+        node->UnlockS();
+        return payload;
+      }
+      node->UnlockS();
+      return std::nullopt;
+    }
+  }
+
   /**
    * @brief The entity of a function for scanning records.
    *
@@ -157,6 +183,51 @@ class BTree
                              : SearchLeftmostLeaf();
 
     return RecordIterator_t{node, begin_key, end_key, std::move(guard)};
+  }
+
+  void
+  Scan(  //
+      const Key &lkey,
+      const Key &rkey,
+      std::map<Key, Payload> &kv_map)  //
+  {
+    auto &&guard = gc_.CreateEpochGuard();
+    auto *node = SearchLeafNodeForRead(lkey);
+    auto begin_key = std::make_tuple(lkey, sizeof(Key), true);
+    auto end_key = std::make_tuple(rkey, sizeof(Key), false);
+    auto iter = RecordIterator_t{node, begin_key, end_key, std::move(guard)};
+    while (iter) {
+      auto [key, value] = *iter;
+      kv_map[key] = value;
+      ++iter;
+    }
+  }
+
+  void
+  PessimisticScan(  //
+      const Key &lkey,
+      const Key &rkey,
+      std::map<Key, Payload> &kv_map)  //
+  {
+    auto &&guard = gc_.CreateEpochGuard();
+    auto *node = SearchLeafNodeForRead(lkey);
+    auto begin_key = std::make_tuple(lkey, sizeof(Key), true);
+    auto end_key = std::make_tuple(rkey, sizeof(Key), false);
+
+    auto key = lkey;
+    auto is_closed = true;
+    const auto &cur_key = key;
+    Node_t::CheckKeyRangeAndLockForRead(node, cur_key);
+    const auto [rc, pos] = node->SearchRecord(cur_key);
+    const auto begin_pos = (rc == NodeRC::kKeyAlreadyInserted && !is_closed) ? pos + 1 : pos;
+    const auto [is_end, end_pos] = node->SearchEndPositionFor(end_key);
+    auto iter = PessimisticRecordIterator_t{node, begin_pos, end_pos, end_key, is_end};
+
+    while (iter) {
+      auto [key, value] = *iter;
+      kv_map[key] = value;
+      ++iter;
+    }
   }
 
   /*####################################################################################

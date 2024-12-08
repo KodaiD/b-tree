@@ -1153,6 +1153,17 @@ class NodeFixLen
     return child;
   }
 
+  /**
+   * @param pos the position of a target record.
+   * @return an address of a target payload.
+   */
+  [[nodiscard]] constexpr auto
+  GetPayloadAddr(const size_t pos) const  //
+      -> void *
+  {
+    return ShiftAddr(this, kPageSize - (pos + 1) * pay_len_);
+  }
+
  private:
   /*####################################################################################
    * Internal constants
@@ -1280,17 +1291,6 @@ class NodeFixLen
   /*####################################################################################
    * Internal getter/setters for records
    *##################################################################################*/
-
-  /**
-   * @param pos the position of a target record.
-   * @return an address of a target payload.
-   */
-  [[nodiscard]] constexpr auto
-  GetPayloadAddr(const size_t pos) const  //
-      -> void *
-  {
-    return ShiftAddr(this, kPageSize - (pos + 1) * pay_len_);
-  }
 
   /**
    * @brief Set a target payload directly.
