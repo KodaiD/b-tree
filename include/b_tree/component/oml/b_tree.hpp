@@ -143,6 +143,30 @@ class BTree
   }
 
   auto
+  OptimisticRead(  //
+      const Key &key,
+      [[maybe_unused]] const size_t key_len)  //
+      -> std::optional<Payload>
+  {
+    [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
+
+    auto *node = SearchLeafNodeForRead(key);
+    Payload payload{};
+    while (true) {
+      const auto ver = Node_t::CheckKeyRange(node, key);
+
+      const auto [existence, pos] = node->SearchRecord(key);
+      if (existence == kKeyAlreadyInserted) {
+        memcpy(&payload, node->GetPayloadAddr(pos), sizeof(Payload));
+        if (node->HasSameVersion(ver)) return payload;
+        continue;
+      }
+
+      if (node->HasSameVersion(ver)) return std::nullopt;
+    }
+  }
+
+  auto
   PessimisticRead(  //
       const Key &key,
       [[maybe_unused]] const size_t key_len)  //
@@ -186,7 +210,7 @@ class BTree
   }
 
   void
-  Scan(  //
+  OptimisticScan(  //
       const Key &lkey,
       const Key &rkey,
       std::map<Key, Payload> &kv_map)  //
