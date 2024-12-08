@@ -264,6 +264,40 @@ class BTree
     iter.CopyNodeSet(node_set);
   }
 
+  auto
+  OptimisticReadKeyOrNextKey(  //
+      const Key &lkey)         //
+      -> std::tuple<Key, std::optional<Payload>>
+  {
+    auto rkey = UINT64_MAX;
+    auto &&guard = gc_.CreateEpochGuard();
+    auto *node = SearchLeafNodeForRead(lkey);
+    auto begin_key = std::make_tuple(lkey, sizeof(Key), true);
+    auto end_key = std::make_tuple(rkey, sizeof(Key), false);
+    auto iter = RecordIterator_t{node, begin_key, end_key, std::move(guard)};
+    auto [key, value] = *iter;
+    return std::make_tuple(key, value);
+  }
+
+  auto
+  OptimisticReadNextKey(  //
+      const Key &lkey)    //
+      -> std::tuple<Key, std::optional<Payload>>
+  {
+    auto rkey = UINT64_MAX;
+    auto &&guard = gc_.CreateEpochGuard();
+    auto *node = SearchLeafNodeForRead(lkey);
+    auto begin_key = std::make_tuple(lkey, sizeof(Key), true);
+    auto end_key = std::make_tuple(rkey, sizeof(Key), false);
+    auto iter = RecordIterator_t{node, begin_key, end_key, std::move(guard)};
+    auto [key, value] = *iter;
+    if (key == lkey) {
+      ++iter;
+      if (iter) std::tie(key, value) = *iter;
+    }
+    return std::make_tuple(key, value);
+  }
+
   /*####################################################################################
    * Public write APIs
    *##################################################################################*/
