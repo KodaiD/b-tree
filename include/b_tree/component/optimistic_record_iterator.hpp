@@ -107,7 +107,11 @@ class OptimisticRecordIterator
    * @retval true if this iterator indicates a live record.
    * @retval false otherwise.
    */
-  explicit operator bool() { return HasRecord(); }
+  explicit
+  operator bool()
+  {
+    return HasRecord();
+  }
 
   /**
    * @retval 1st: a key indicated by the iterator.
@@ -193,6 +197,8 @@ class OptimisticRecordIterator
         has_key_ = true;
         is_closed_ = false;
 
+        node_set_[node_] = ver_;
+
         return true;
       }
 
@@ -238,6 +244,12 @@ class OptimisticRecordIterator
       -> Payload
   {
     return payload_;
+  }
+
+  void
+  CopyNodeSet(std::unordered_map<Node *, uint64_t> &node_set)
+  {
+    node_set = this->node_set_;
   }
 
  private:
@@ -318,6 +330,8 @@ class OptimisticRecordIterator
 
   /// the key of the current record.
   static thread_local inline auto key_ = ReserveDataRegion<Key>();  // NOLINT
+
+  std::unordered_map<Node *, uint64_t> node_set_;
 };
 
 }  // namespace dbgroup::index::b_tree::component

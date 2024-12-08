@@ -145,7 +145,8 @@ class BTree
   auto
   OptimisticRead(  //
       const Key &key,
-      [[maybe_unused]] const size_t key_len)  //
+      [[maybe_unused]] const size_t key_len,
+      std::unordered_map<Node_t *, uint64_t> &node_set)  //
       -> std::optional<Payload>
   {
     [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
@@ -162,19 +163,24 @@ class BTree
         continue;
       }
 
-      if (node->HasSameVersion(ver)) return std::nullopt;
+      if (node->HasSameVersion(ver)) {
+        node_set.emplace(node, ver);
+        return std::nullopt;
+      }
     }
   }
 
   auto
   PessimisticRead(  //
       const Key &key,
-      [[maybe_unused]] const size_t key_len)  //
+      [[maybe_unused]] const size_t key_len,
+      std::unordered_map<Node_t *, uint64_t> &node_set)  //
       -> std::optional<Payload>
   {
     [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
 
     auto *node = SearchLeafNodeForRead(key);
+    node_set.emplace(node, 0);
     Payload payload{};
     while (true) {
       Node_t::CheckKeyRangeAndLockForRead(node, key);
@@ -213,7 +219,8 @@ class BTree
   OptimisticScan(  //
       const Key &lkey,
       const Key &rkey,
-      std::map<Key, Payload> &kv_map)  //
+      std::map<Key, Payload> &kv_map,
+      std::unordered_map<Node_t *, uint64_t> &node_set)  //
   {
     auto &&guard = gc_.CreateEpochGuard();
     auto *node = SearchLeafNodeForRead(lkey);
@@ -225,13 +232,15 @@ class BTree
       kv_map[key] = value;
       ++iter;
     }
+    iter.CopyNodeSet(node_set);
   }
 
   void
   PessimisticScan(  //
       const Key &lkey,
       const Key &rkey,
-      std::map<Key, Payload> &kv_map)  //
+      std::map<Key, Payload> &kv_map,
+      std::unordered_map<Node_t *, uint64_t> &node_set)  //
   {
     auto &&guard = gc_.CreateEpochGuard();
     auto *node = SearchLeafNodeForRead(lkey);
@@ -252,6 +261,7 @@ class BTree
       kv_map[key] = value;
       ++iter;
     }
+    iter.CopyNodeSet(node_set);
   }
 
   /*####################################################################################

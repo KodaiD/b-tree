@@ -68,6 +68,7 @@ class RecordIterator
         end_key_{std::move(end_key)},
         is_end_{is_end}
   {
+    node_set_[node_] = 0;
   }
 
   RecordIterator(const RecordIterator &) = delete;
@@ -156,6 +157,7 @@ class RecordIterator
 
       // go to the next node
       node_ = node_->GetNextNodeForRead();
+      node_set_[node_] = 0;
       pos_ = 0;
       std::tie(is_end_, end_pos_) = node_->SearchEndPositionFor(end_key_);
     }
@@ -183,6 +185,12 @@ class RecordIterator
     return node_->template GetPayload<Payload>(pos_);
   }
 
+  void
+  CopyNodeSet(std::unordered_map<Node *, uint64_t> &node_set)
+  {
+    node_set = this->node_set_;
+  }
+
  private:
   /*####################################################################################
    * Internal member variables
@@ -202,6 +210,8 @@ class RecordIterator
 
   /// a flag for indicating a current node is rightmost in scan-range.
   bool is_end_{false};
+
+  std::unordered_map<Node *, uint64_t> node_set_;
 };
 
 }  // namespace dbgroup::index::b_tree::component
