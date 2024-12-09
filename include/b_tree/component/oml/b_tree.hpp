@@ -145,27 +145,26 @@ class BTree
   auto
   OptimisticRead(  //
       const Key &key,
-      [[maybe_unused]] const size_t key_len,
+      Payload &payload,
       std::unordered_map<Node_t *, uint64_t> &node_set)  //
-      -> std::optional<Payload>
+      -> NodeRC
   {
     [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
 
     auto *node = SearchLeafNodeForRead(key);
-    Payload payload{};
     while (true) {
       const auto ver = Node_t::CheckKeyRange(node, key);
 
       const auto [existence, pos] = node->SearchRecord(key);
       if (existence == kKeyAlreadyInserted) {
         memcpy(&payload, node->GetPayloadAddr(pos), sizeof(Payload));
-        if (node->HasSameVersion(ver)) return payload;
+        if (node->HasSameVersion(ver)) return kKeyAlreadyInserted;
         continue;
       }
 
       if (node->HasSameVersion(ver)) {
         node_set.emplace(node, ver);
-        return std::nullopt;
+        return kKeyNotInserted;
       }
     }
   }
@@ -173,25 +172,24 @@ class BTree
   auto
   PessimisticRead(  //
       const Key &key,
-      [[maybe_unused]] const size_t key_len,
+      Payload &payload,
       std::unordered_map<Node_t *, uint64_t> &node_set)  //
-      -> std::optional<Payload>
+      -> NodeRC
   {
     [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
 
     auto *node = SearchLeafNodeForRead(key);
     node_set.emplace(node, 0);
-    Payload payload{};
     while (true) {
       Node_t::CheckKeyRangeAndLockForRead(node, key);
       const auto [existence, pos] = node->SearchRecord(key);
       if (existence == kKeyAlreadyInserted) {
         memcpy(&payload, node->GetPayloadAddr(pos), sizeof(Payload));
         node->UnlockS();
-        return payload;
+        return kKeyAlreadyInserted;
       }
       node->UnlockS();
-      return std::nullopt;
+      return kKeyNotInserted;
     }
   }
 
@@ -351,6 +349,22 @@ class BTree
       const auto rc = Node_t::Insert(node, key, key_len, &payload, kPayLen);
       if (rc == kNeedRetry) continue;
       return (rc == kCompleted) ? kSuccess : kKeyExist;
+    }
+  }
+
+  auto
+  TryInsert(  //
+      const Key &key,
+      const Payload &payload)  //
+      -> NodeRC
+  {
+    [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
+
+    while (true) {
+      auto *node = SearchLeafNodeForWrite(key);
+      const auto rc = Node_t::Insert(node, key, sizeof(Key), &payload, kPayLen);
+      if (rc == kNeedRetry) continue;
+      return (rc == kCompleted) ? kCompleted : kKeyAlreadyInserted;
     }
   }
 
