@@ -189,6 +189,29 @@ class OptimisticLock
     }
   }
 
+  [[nodiscard]] auto
+  TryLockXAndCheckLockStatus(const uint64_t ver)  //
+      -> LockResult
+  {
+    const auto desired = ver | kXLock;
+    while (true) {
+      for (size_t i = 1; true; ++i) {
+        auto expected = lock_.load(std::memory_order_relaxed);
+        if ((expected & ~kAllBitsMask) == kNoLocks) {
+          expected = ver;
+          const auto success = lock_.compare_exchange_weak(
+              expected, desired, std::memory_order_acquire, std::memory_order_relaxed);
+          if (success) return LockResult::SUCCESS;
+        }
+        if ((expected & kSIXAndSBitsMask) != ver) return LockResult::VERSION_MISMATCH;
+        if ((expected & kSLock) != 0) return LockResult::IS_S_LOCKED;
+        if (i >= kRetryNum) break;
+      }
+
+      std::this_thread::sleep_for(kShortSleep);
+    }
+  }
+
   /**
    * @brief Downgrade an X lock to an SIX lock.
    *

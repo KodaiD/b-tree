@@ -883,10 +883,18 @@ class BTree
       -> NodeRC
   {
     // try to acquire locks
-    if (!parent->TryLockX(p_ver)) return kNeedRetry;
-    if (!child->TryLockX(c_ver)) {
+    auto parent_lock_result = parent->TryLockXAndCheckLockStatus(p_ver);
+    if (parent_lock_result == OptimisticLock::LockResult::VERSION_MISMATCH)
+      return kNeedRetry;
+    else if (parent_lock_result == OptimisticLock::LockResult::IS_S_LOCKED)
+      return kAborted;
+    auto child_lock_result = child->TryLockXAndCheckLockStatus(c_ver);
+    if (child_lock_result == OptimisticLock::LockResult::VERSION_MISMATCH) {
       parent->UnlockX();
       return kNeedRetry;
+    } else if (child_lock_result == OptimisticLock::LockResult::IS_S_LOCKED) {
+      parent->UnlockX();
+      return kAborted;
     }
 
     // perform splitting
@@ -948,7 +956,11 @@ class BTree
       -> NodeRC
   {
     // try to acquire a lock and check the given node is a root node
-    if (!node->TryLockX(ver)) return kNeedRetry;
+    auto lock_result = node->TryLockXAndCheckLockStatus(ver);
+    if (lock_result == OptimisticLock::LockResult::VERSION_MISMATCH)
+      return kNeedRetry;
+    else if (lock_result == OptimisticLock::LockResult::IS_S_LOCKED)
+      return kAborted;
     if (node != root_.load(std::memory_order_relaxed)) {
       // other threads modified a root node
       node->UnlockX();
@@ -1019,10 +1031,18 @@ class BTree
       -> NodeRC
   {
     // try to acquire locks
-    if (!parent->TryLockX(p_ver)) return kNeedRetry;
-    if (!l_node->TryLockX(c_ver)) {
+    auto parent_lock_result = parent->TryLockXAndCheckLockStatus(p_ver);
+    if (parent_lock_result == OptimisticLock::LockResult::VERSION_MISMATCH)
+      return kNeedRetry;
+    else if (parent_lock_result == OptimisticLock::LockResult::IS_S_LOCKED)
+      return kAborted;
+    auto child_lock_result = l_node->TryLockXAndCheckLockStatus(c_ver);
+    if (child_lock_result == OptimisticLock::LockResult::VERSION_MISMATCH) {
       parent->UnlockX();
       return kNeedRetry;
+    } else if (child_lock_result == OptimisticLock::LockResult::IS_S_LOCKED) {
+      parent->UnlockX();
+      return kAborted;
     }
 
     // check there is a mergeable sibling node
@@ -1077,7 +1097,11 @@ class BTree
     if (node->GetRecordCount() > 1 || !node->IsInner()) return kCompleted;
 
     // if a internal-root node has only one child, try to shrink a tree
-    if (!node->TryLockX(ver)) return kNeedRetry;
+    auto lock_result = node->TryLockXAndCheckLockStatus(ver);
+    if (lock_result == OptimisticLock::LockResult::VERSION_MISMATCH)
+      return kNeedRetry;
+    else if (lock_result == OptimisticLock::LockResult::IS_S_LOCKED)
+      return kAborted;
     if (node != root_.load(std::memory_order_relaxed)) {
       node->UnlockX();
       return kNeedRetry;

@@ -429,6 +429,13 @@ class NodeFixLen
     return mutex_.TryLockX(ver);
   }
 
+  auto
+  TryLockXAndCheckLockStatus(const uint64_t ver)  //
+      -> OptimisticLock::LockResult
+  {
+    return mutex_.TryLockXAndCheckLockStatus(ver);
+  }
+
   /**
    * @brief Release the exclusive lock for this node.
    *
