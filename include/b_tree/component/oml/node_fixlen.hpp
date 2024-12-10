@@ -408,6 +408,28 @@ class NodeFixLen
   }
 
   /**
+   * @brief Acquire an exclusive lock for this node.
+   *
+   */
+  void
+  LockX()
+  {
+    mutex_.LockX();
+  }
+
+  /**
+   * @param ver an expected version value.
+   * @retval true if an exclusive lock is acquired.
+   * @retval false otherwise.
+   */
+  auto
+  TryLockX(const uint64_t ver)  //
+      -> bool
+  {
+    return mutex_.TryLockX(ver);
+  }
+
+  /**
    * @brief Release the exclusive lock for this node.
    *
    * @return a version value after the exclusive lock is released.
@@ -922,6 +944,34 @@ class NodeFixLen
     mutex_.UnlockX();
   }
 
+  void
+  InsertChildWithoutUpgradingLock(  //
+      const Node *r_node,
+      const Key &sep_key,
+      [[maybe_unused]] const size_t sep_key_len,
+      const size_t pos)  //
+  {
+    // insert a right child
+    const auto move_num = record_count_ - 1 - pos;
+    const auto move_size = kPtrLen * move_num;
+    const auto top_offset = kPageSize - block_size_;
+
+    // mutex_.UpgradeToX();
+    memmove(ShiftAddr(this, top_offset - kPtrLen), ShiftAddr(this, top_offset), move_size);
+    SetPayload(top_offset + move_size, &r_node);
+
+    // insert a separator key
+    memmove(&(keys_[pos + 2]), &(keys_[pos + 1]),
+            kKeyLen * (move_num + has_low_key_ + has_high_key_));
+    keys_[pos + 1] = sep_key;
+
+    // update header information
+    ++record_count_;
+    block_size_ += kPtrLen;
+
+    mutex_.UnlockX();
+  }
+
   /**
    * @brief Delete a child node from this node.
    *
@@ -932,6 +982,25 @@ class NodeFixLen
   {
     mutex_.UpgradeToX();
 
+    // delete a separator key
+    const auto move_num = record_count_ - 2 - pos;
+    memmove(&(keys_[pos + 1]), &(keys_[pos + 2]),
+            kKeyLen * (move_num + has_low_key_ + has_high_key_));
+
+    // delete a right child
+    auto *top_addr = ShiftAddr(this, kPageSize - block_size_);
+    memmove(ShiftAddr(top_addr, kPtrLen), top_addr, kPtrLen * move_num);
+
+    // update this header
+    --record_count_;
+    block_size_ -= kPtrLen;
+
+    mutex_.UnlockX();
+  }
+
+  void
+  DeleteChildWithoutUpgradingLock(const size_t pos)  //
+  {
     // delete a separator key
     const auto move_num = record_count_ - 2 - pos;
     memmove(&(keys_[pos + 1]), &(keys_[pos + 2]),
@@ -994,6 +1063,41 @@ class NodeFixLen
     keys_[l_count] = sep_key;                                              // a highest key
   }
 
+  void
+  SplitWithoutUpgradingLock(Node *r_node)
+  {
+    const auto l_count = record_count_ / 2;
+    const auto r_count = record_count_ - l_count;
+
+    // copy right half records to a right node
+    r_node->mutex_.LockX();
+    r_node->pay_len_ = pay_len_;
+    auto r_offset = r_node->CopyRecordsFrom(this, l_count, record_count_, kPageSize);
+    const auto &sep_key = r_node->keys_[0];
+    r_node->keys_[r_count] = keys_[record_count_];     // a highest key
+    r_node->keys_[r_count + has_high_key_] = sep_key;  // a lowest key
+
+    // update a right header
+    r_node->block_size_ = kPageSize - r_offset;
+    if (!is_inner_) {
+      r_node->next_ = next_;
+    }
+    r_node->has_low_key_ = 1;
+    r_node->has_high_key_ = has_high_key_;
+
+    // update a header
+    block_size_ -= r_node->block_size_;
+    record_count_ = l_count;
+    if (!is_inner_) {
+      next_ = r_node;
+    }
+    has_high_key_ = 1;
+
+    // update lowest/highest keys
+    keys_[l_count + has_low_key_] = keys_[record_count_ + has_high_key_];  // a lowest key
+    keys_[l_count] = sep_key;                                              // a highest key
+  }
+
   /**
    * @brief Merge a given node into this node.
    *
@@ -1024,6 +1128,39 @@ class NodeFixLen
 
     const auto new_ver = mutex_.UnlockX();
     r_node->mutex_.UpgradeToX();
+
+    // update a header of a right node
+    r_node->is_removed_ = 1;
+    if (!is_inner_) {
+      r_node->next_ = this;
+    }
+    r_node->mutex_.UnlockX();
+
+    return new_ver;
+  }
+
+  auto
+  MergeWithoutUpgradingLock(Node *r_node)  //
+      -> uint64_t
+  {
+    // copy right records to this nodes
+    const auto low_key = keys_[record_count_ - 1 + has_high_key_ + has_low_key_];
+    auto offset = CopyRecordsFrom(r_node, 0, r_node->record_count_, kPageSize - block_size_);
+    if (r_node->has_high_key_) {
+      keys_[record_count_] = r_node->keys_[r_node->record_count_];
+    }
+    if (has_low_key_) {
+      keys_[record_count_ + r_node->has_high_key_] = std::move(low_key);
+    }
+
+    // update a header
+    block_size_ = kPageSize - offset;
+    if (!is_inner_) {
+      next_ = r_node->next_;
+    }
+    has_high_key_ = r_node->has_high_key_;
+
+    const auto new_ver = mutex_.UnlockX();
 
     // update a header of a right node
     r_node->is_removed_ = 1;
@@ -1142,6 +1279,21 @@ class NodeFixLen
   {
     mutex_.UpgradeToX();
 
+    // get a child node as a new root node
+    auto *child = GetPayload<Node *>(0);
+
+    // remove this node from a tree
+    is_removed_ = 1;
+    next_ = nullptr;
+
+    mutex_.UnlockX();
+    return child;
+  }
+
+  auto
+  RemoveRootWithoutUpgradingLock()  //
+      -> Node *
+  {
     // get a child node as a new root node
     auto *child = GetPayload<Node *>(0);
 

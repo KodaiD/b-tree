@@ -883,18 +883,18 @@ class BTree
       -> NodeRC
   {
     // try to acquire locks
-    if (!parent->TryLockSIX(p_ver)) return kNeedRetry;
-    if (!child->TryLockSIX(c_ver)) {
-      parent->UnlockSIX();
+    if (!parent->TryLockX(p_ver)) return kNeedRetry;
+    if (!child->TryLockX(c_ver)) {
+      parent->UnlockX();
       return kNeedRetry;
     }
 
     // perform splitting
     auto *l_node = child;
     auto *r_node = new (GetNodePage()) Node_t{l_node->IsInner()};
-    l_node->Split(r_node);
+    l_node->SplitWithoutUpgradingLock(r_node);
     auto &&[new_child, sep_key, sep_key_len, new_c_ver] = l_node->GetValidSplitNode(key, r_node);
-    parent->InsertChild(r_node, sep_key, sep_key_len, pos);
+    parent->InsertChildWithoutUpgradingLock(r_node, sep_key, sep_key_len, pos);
 
     child = new_child;
     c_ver = new_c_ver;
@@ -948,17 +948,17 @@ class BTree
       -> NodeRC
   {
     // try to acquire a lock and check the given node is a root node
-    if (!node->TryLockSIX(ver)) return kNeedRetry;
+    if (!node->TryLockX(ver)) return kNeedRetry;
     if (node != root_.load(std::memory_order_relaxed)) {
       // other threads modified a root node
-      node->UnlockSIX();
+      node->UnlockX();
       return kNeedRetry;
     }
 
     // perform splitting the root node
     auto *l_node = node;
     auto *r_node = new (GetNodePage()) Node_t{l_node->IsInner()};
-    l_node->Split(r_node);
+    l_node->SplitWithoutUpgradingLock(r_node);
 
     // install a new root node
     auto *new_root = new (GetNodePage()) Node_t{l_node, r_node};
@@ -1019,9 +1019,9 @@ class BTree
       -> NodeRC
   {
     // try to acquire locks
-    if (!parent->TryLockSIX(p_ver)) return kNeedRetry;
-    if (!l_node->TryLockSIX(c_ver)) {
-      parent->UnlockSIX();
+    if (!parent->TryLockX(p_ver)) return kNeedRetry;
+    if (!l_node->TryLockX(c_ver)) {
+      parent->UnlockX();
       return kNeedRetry;
     }
 
@@ -1030,8 +1030,8 @@ class BTree
     if (r_node == nullptr) return kCompleted;
 
     // perform merging
-    c_ver = l_node->Merge(r_node);
-    parent->DeleteChild(l_pos);
+    c_ver = l_node->MergeWithoutUpgradingLock(r_node);
+    parent->DeleteChildWithoutUpgradingLock(l_pos);
     gc_.AddGarbage<Page>(r_node);
 
     return kCompleted;
@@ -1077,15 +1077,15 @@ class BTree
     if (node->GetRecordCount() > 1 || !node->IsInner()) return kCompleted;
 
     // if a internal-root node has only one child, try to shrink a tree
-    if (!node->TryLockSIX(ver)) return kNeedRetry;
+    if (!node->TryLockX(ver)) return kNeedRetry;
     if (node != root_.load(std::memory_order_relaxed)) {
-      node->UnlockSIX();
+      node->UnlockX();
       return kNeedRetry;
     }
 
     // remove the root node
     gc_.AddGarbage<Page>(node);
-    node = node->RemoveRoot();
+    node = node->RemoveRootWithoutUpgradingLock();
     root_.store(node, std::memory_order_release);
 
     return kNeedRetry;
