@@ -361,8 +361,11 @@ class BTree
     [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
 
     while (true) {
-      auto *node = SearchLeafNodeForWrite(key);
-      const auto rc = Node_t::Insert(node, key, sizeof(Key), &payload, kPayLen);
+      auto [rc, node] = TrySearchLeafNodeForWrite(key);
+      if (rc == NodeRC::kAborted) {
+        return NodeRC::kAborted;  // Split/Merge failed
+      }
+      rc = Node_t::Insert(node, key, sizeof(Key), &payload, kPayLen);
       if (rc == kNeedRetry) continue;
       return (rc == kCompleted) ? kCompleted : kKeyAlreadyInserted;
     }
@@ -607,6 +610,35 @@ class BTree
     }
   }
 
+  [[nodiscard]] auto
+  GetRootForWriteWithCheckingLockStatus(const Key &key)  //
+      -> std::tuple<NodeRC, Node_t *, uint64_t>
+  {
+    while (true) {
+      auto *node = root_.load(std::memory_order_acquire);
+
+      // check this tree requires SMOs
+      auto [rc, ver] = node->CheckNodeStatus(kMaxKeyLen + kMaxPayLen);
+      if (rc == kNeedRetry) continue;  // a root node is removed
+      if (rc == kNeedSplit) {
+        if (auto rc = TryRootSplitWithCheckingLockStatus(key, node, ver); rc == kNeedRetry) {
+          continue;
+        } else if (rc == kAborted) {
+          return {kAborted, nullptr, 0};
+        }
+        // a valid child node and its version value are selected in TryRootSplit
+      } else if (rc == kNeedMerge) {
+        if (auto rc = TryShrinkTreeWithCheckingLockStatus(node, ver); rc == kNeedRetry) {
+          continue;  // retry to get a new root node
+        } else if (rc == kAborted) {
+          return {kAborted, nullptr, 0};
+        }
+      }
+
+      return {kCompleted, node, ver};
+    }
+  }
+
   /**
    * @brief Search a leaf node that may have a target key.
    *
@@ -694,6 +726,47 @@ class BTree
     }
 
     return node;
+  }
+
+  [[nodiscard]] auto
+  TrySearchLeafNodeForWrite(const Key &key)  //
+      -> std::tuple<NodeRC, Node_t *>
+  {
+    auto [rc, node, ver] = GetRootForWriteWithCheckingLockStatus(key);
+    while (node->IsInner()) {
+      auto [pos, child] = node->SearchChild(key, ver, kMaxKeyLen + kMaxPayLen);
+      if (child == nullptr) {
+        std::tie(rc, node, ver) = GetRootForWriteWithCheckingLockStatus(key);
+        continue;
+      }
+
+      // perform internal SMOs eagerly
+      auto [rc, child_ver] = child->CheckNodeStatus(kMaxKeyLen + kMaxPayLen);
+      if (rc == kNeedRetry) continue;  // the child node was removed
+      if (rc == kNeedSplit) {
+        if (auto rc = TrySplitWithCheckingLockStatus(key, child, child_ver, node, ver, pos);
+            rc == kNeedRetry) {
+          continue;
+        } else if (rc == kAborted) {
+          return {kAborted, nullptr};
+        }
+        // a valid child node and its version value are selected in TrySplit
+      } else if (rc == kNeedMerge) {
+        if (auto rc = TryMergeWithCheckingLockStatus(child, child_ver, node, ver, pos);
+            rc == kNeedRetry) {
+          continue;
+          // a valid version value is selected in TryMerge
+        } else if (rc == kAborted) {
+          return {kAborted, nullptr};
+        }
+      }
+
+      // go down to the next level
+      node = child;
+      ver = child_ver;
+    }
+
+    return {kCompleted, node};
   }
 
   /**
@@ -799,6 +872,35 @@ class BTree
     return true;
   }
 
+  auto
+  TrySplitWithCheckingLockStatus(  //
+      const Key &key,
+      Node_t *&child,
+      uint64_t &c_ver,
+      Node_t *parent,
+      uint64_t p_ver,
+      const size_t pos)  //
+      -> NodeRC
+  {
+    // try to acquire locks
+    if (!parent->TryLockSIX(p_ver)) return kNeedRetry;
+    if (!child->TryLockSIX(c_ver)) {
+      parent->UnlockSIX();
+      return kNeedRetry;
+    }
+
+    // perform splitting
+    auto *l_node = child;
+    auto *r_node = new (GetNodePage()) Node_t{l_node->IsInner()};
+    l_node->Split(r_node);
+    auto &&[new_child, sep_key, sep_key_len, new_c_ver] = l_node->GetValidSplitNode(key, r_node);
+    parent->InsertChild(r_node, sep_key, sep_key_len, pos);
+
+    child = new_child;
+    c_ver = new_c_ver;
+    return kCompleted;
+  }
+
   /**
    * @brief Split a root node and install a new root node into this tree.
    *
@@ -836,6 +938,36 @@ class BTree
     node = new_node;
     ver = new_ver;
     return true;
+  }
+
+  [[nodiscard]] auto
+  TryRootSplitWithCheckingLockStatus(  //
+      const Key &key,
+      Node_t *&node,
+      uint64_t &ver)  //
+      -> NodeRC
+  {
+    // try to acquire a lock and check the given node is a root node
+    if (!node->TryLockSIX(ver)) return kNeedRetry;
+    if (node != root_.load(std::memory_order_relaxed)) {
+      // other threads modified a root node
+      node->UnlockSIX();
+      return kNeedRetry;
+    }
+
+    // perform splitting the root node
+    auto *l_node = node;
+    auto *r_node = new (GetNodePage()) Node_t{l_node->IsInner()};
+    l_node->Split(r_node);
+
+    // install a new root node
+    auto *new_root = new (GetNodePage()) Node_t{l_node, r_node};
+    root_.store(new_root, std::memory_order_release);
+    auto &&[new_node, sep_key, sep_key_len, new_ver] = l_node->GetValidSplitNode(key, r_node);
+
+    node = new_node;
+    ver = new_ver;
+    return kCompleted;
   }
 
   /**
@@ -877,6 +1009,34 @@ class BTree
     return true;
   }
 
+  auto
+  TryMergeWithCheckingLockStatus(  //
+      Node_t *l_node,
+      uint64_t &c_ver,
+      Node_t *parent,
+      uint64_t p_ver,
+      const size_t l_pos)  //
+      -> NodeRC
+  {
+    // try to acquire locks
+    if (!parent->TryLockSIX(p_ver)) return kNeedRetry;
+    if (!l_node->TryLockSIX(c_ver)) {
+      parent->UnlockSIX();
+      return kNeedRetry;
+    }
+
+    // check there is a mergeable sibling node
+    auto *r_node = parent->GetMergeableRightChild(l_node, l_pos);
+    if (r_node == nullptr) return kCompleted;
+
+    // perform merging
+    c_ver = l_node->Merge(r_node);
+    parent->DeleteChild(l_pos);
+    gc_.AddGarbage<Page>(r_node);
+
+    return kCompleted;
+  }
+
   /**
    * @brief Remove a root node that has only one child node.
    *
@@ -906,6 +1066,29 @@ class BTree
     root_.store(node, std::memory_order_release);
 
     return false;
+  }
+
+  auto
+  TryShrinkTreeWithCheckingLockStatus(  //
+      Node_t *node,
+      uint64_t ver)  //
+      -> NodeRC
+  {
+    if (node->GetRecordCount() > 1 || !node->IsInner()) return kCompleted;
+
+    // if a internal-root node has only one child, try to shrink a tree
+    if (!node->TryLockSIX(ver)) return kNeedRetry;
+    if (node != root_.load(std::memory_order_relaxed)) {
+      node->UnlockSIX();
+      return kNeedRetry;
+    }
+
+    // remove the root node
+    gc_.AddGarbage<Page>(node);
+    node = node->RemoveRoot();
+    root_.store(node, std::memory_order_release);
+
+    return kNeedRetry;
   }
 
   /*####################################################################################

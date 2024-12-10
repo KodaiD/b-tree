@@ -25,7 +25,7 @@
 #include <vector>
 
 // external sources
-#include "lock/optimistic_lock.hpp"
+#include "node_mutex.hpp"
 
 // local sources
 #include "b_tree/component/common.hpp"
@@ -1456,7 +1456,7 @@ class NodeFixLen
   uint16_t pay_len_{kPtrLen};
 
   /// a lock for concurrency controls.
-  ::dbgroup::lock::OptimisticLock mutex_{};
+  OptimisticLock mutex_{};
 
   /// the pointer to the next node.
   Node *next_{nullptr};

@@ -40,7 +40,8 @@ namespace dbgroup::index::b_tree::component
  */
 enum NodeRC {
   kCompleted = 0,
-  kKeyNotInserted = -7,
+  kAborted = -8,
+  kKeyNotInserted,
   kKeyAlreadyDeleted,
   kKeyAlreadyInserted,
   kNeedSplit,
