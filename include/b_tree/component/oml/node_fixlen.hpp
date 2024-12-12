@@ -826,6 +826,42 @@ class NodeFixLen
     }
   }
 
+  static auto
+  InsertAndGetVersion(  //
+      Node *&node,
+      const Key &key,
+      [[maybe_unused]] const size_t key_len,
+      const void *payload,
+      [[maybe_unused]] const size_t pay_len,
+      std::tuple<Node *, uint64_t, uint64_t> &node_info)  //
+      -> NodeRC
+  {
+    const auto rec_len = kKeyLen + node->pay_len_;
+
+    while (true) {
+      auto ver = CheckKeyRange(node, key);
+      const auto rc = node->CheckSMOs(rec_len, ver);
+      if (rc == kNeedRetry) continue;           // retry on the leaf level
+      if (rc == kNeedSplit) return kNeedRetry;  // ignore merging in the leaf traversal
+
+      // search position where this key has to be set
+      const auto [existence, pos] = node->SearchRecord(key);
+      if (existence == kKeyAlreadyInserted) {
+        if (node->mutex_.HasSameVersion(ver)) return kKeyAlreadyInserted;
+        continue;
+      }
+
+      // a target record does not exist, so try to acquire an exclusive lock
+      if (!node->mutex_.TryLockX(ver)) continue;
+
+      node->InsertRecord(key, payload, pos);
+
+      auto new_ver = node->mutex_.UnlockX();
+      node_info = {node, ver, new_ver};
+      return kCompleted;
+    }
+  }
+
   /**
    * @brief Update a target kay with a specified payload.
    *

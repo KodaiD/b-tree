@@ -355,7 +355,8 @@ class BTree
   auto
   TryInsert(  //
       const Key &key,
-      const Payload &payload)  //
+      const Payload &payload,
+      std::tuple<Node_t *, uint64_t, uint64_t> &node_info)  //
       -> NodeRC
   {
     [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
@@ -365,7 +366,7 @@ class BTree
       if (rc == NodeRC::kAborted) {
         return NodeRC::kAborted;  // Split/Merge failed
       }
-      rc = Node_t::Insert(node, key, sizeof(Key), &payload, kPayLen);
+      rc = Node_t::InsertAndGetVersion(node, key, sizeof(Key), &payload, kPayLen, node_info);
       if (rc == kNeedRetry) continue;
       return (rc == kCompleted) ? kCompleted : kKeyAlreadyInserted;
     }
