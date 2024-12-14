@@ -96,6 +96,17 @@ class BTree
     gc_.StartGC();
   }
 
+  BTree() : gc_{kDefaultGCTime, kDefaultGCThreadNum}
+  {
+    auto *root = new (GetNodePage()) Node_t{kLeafFlag};
+    if constexpr (!kUseVarLenLayout) {
+      root->SetPayloadLength(kPayLen);
+    }
+    root_.store(root, std::memory_order_release);
+
+    gc_.StartGC();
+  }
+
   BTree(const BTree &) = delete;
   BTree(BTree &&) = delete;
 
