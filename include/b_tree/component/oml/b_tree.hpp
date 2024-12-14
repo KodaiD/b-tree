@@ -378,8 +378,10 @@ class BTree
         return NodeRC::kAborted;  // Split/Merge failed
       }
       rc = Node_t::InsertAndGetVersion(node, key, sizeof(Key), &payload, kPayLen, node_info);
-      if (rc == kNeedRetry) continue;
-      return (rc == kCompleted) ? kCompleted : kKeyAlreadyInserted;
+      if (rc == NodeRC::kNeedRetry)
+        continue;
+      else
+        return rc;
     }
   }
 

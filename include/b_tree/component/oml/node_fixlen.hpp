@@ -852,7 +852,11 @@ class NodeFixLen
       }
 
       // a target record does not exist, so try to acquire an exclusive lock
-      if (!node->mutex_.TryLockX(ver)) continue;
+      auto lock_result = node->mutex_.TryLockXAndCheckLockStatus(ver);
+      if (lock_result == OptimisticLock::LockResult::VERSION_MISMATCH)
+        continue;
+      else if (lock_result == OptimisticLock::LockResult::IS_S_LOCKED)
+        return kAborted;
 
       node->InsertRecord(key, payload, pos);
 
