@@ -224,32 +224,24 @@ class BTree
     return RecordIterator_t{node, begin_key, end_key, std::move(guard)};
   }
 
-  void
+  auto
   OptimisticScan(  //
       const Key &lkey,
-      const Key &rkey,
-      std::map<Key, Payload> &kv_map,
-      std::unordered_map<Node_t *, uint64_t> &node_set)  //
+      const Key &rkey)  //
+      -> RecordIterator_t
   {
     auto &&guard = gc_.CreateEpochGuard();
     auto *node = SearchLeafNodeForRead(lkey);
     auto begin_key = std::make_tuple(lkey, sizeof(Key), true);
     auto end_key = std::make_tuple(rkey, sizeof(Key), false);
-    auto iter = RecordIterator_t{node, begin_key, end_key, std::move(guard)};
-    while (iter) {
-      auto [key, value] = *iter;
-      kv_map[key] = value;
-      ++iter;
-    }
-    iter.CopyNodeSet(node_set);
+    return RecordIterator_t{node, begin_key, end_key, std::move(guard)};
   }
 
-  void
+  auto
   PessimisticScan(  //
       const Key &lkey,
-      const Key &rkey,
-      std::map<Key, Payload> &kv_map,
-      std::unordered_map<Node_t *, uint64_t> &node_set)  //
+      const Key &rkey)  //
+      -> PessimisticRecordIterator_t
   {
     auto &&guard = gc_.CreateEpochGuard();
     auto *node = SearchLeafNodeForRead(lkey);
@@ -263,14 +255,7 @@ class BTree
     const auto [rc, pos] = node->SearchRecord(cur_key);
     const auto begin_pos = (rc == NodeRC::kKeyAlreadyInserted && !is_closed) ? pos + 1 : pos;
     const auto [is_end, end_pos] = node->SearchEndPositionFor(end_key);
-    auto iter = PessimisticRecordIterator_t{node, begin_pos, end_pos, end_key, is_end};
-
-    while (iter) {
-      auto [key, value] = *iter;
-      kv_map[key] = value;
-      ++iter;
-    }
-    iter.CopyNodeSet(node_set);
+    return PessimisticRecordIterator_t{node, begin_pos, end_pos, end_key, is_end};
   }
 
   auto
