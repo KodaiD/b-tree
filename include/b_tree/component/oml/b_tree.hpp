@@ -367,6 +367,7 @@ class BTree
   TryInsert(  //
       const Key &key,
       const Payload &payload,
+      Payload &old_payload,
       std::tuple<Node_t *, uint64_t, uint64_t> &node_info)  //
       -> NodeRC
   {
@@ -377,7 +378,8 @@ class BTree
       if (rc == NodeRC::kAborted) {
         return NodeRC::kAborted;  // Split/Merge failed
       }
-      rc = Node_t::InsertAndGetVersion(node, key, sizeof(Key), &payload, kPayLen, node_info);
+      rc = Node_t::InsertAndGetVersion(node, key, sizeof(Key), &payload, &old_payload, kPayLen,
+                                       node_info);
       if (rc == NodeRC::kNeedRetry)
         continue;
       else

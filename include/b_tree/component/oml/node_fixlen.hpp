@@ -832,6 +832,7 @@ class NodeFixLen
       const Key &key,
       [[maybe_unused]] const size_t key_len,
       const void *payload,
+      void *out_payload,
       [[maybe_unused]] const size_t pay_len,
       std::tuple<Node *, uint64_t, uint64_t> &node_info)  //
       -> NodeRC
@@ -847,6 +848,7 @@ class NodeFixLen
       // search position where this key has to be set
       const auto [existence, pos] = node->SearchRecord(key);
       if (existence == kKeyAlreadyInserted) {
+        memcpy(out_payload, node->GetPayloadAddr(pos), pay_len);
         if (node->mutex_.HasSameVersion(ver)) return kKeyAlreadyInserted;
         continue;
       }
