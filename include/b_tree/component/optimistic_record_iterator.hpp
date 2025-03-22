@@ -47,6 +47,8 @@ class OptimisticRecordIterator
   using ScanKey = std::optional<std::tuple<const Key &, size_t, bool>>;
   using EpochGuard = ::dbgroup::memory::component::EpochGuard;
 
+  using NodeMap = typename Index::NodeMap;
+
   /*####################################################################################
    * Public constructors and assignment operators
    *##################################################################################*/
@@ -58,16 +60,19 @@ class OptimisticRecordIterator
    * @param begin_key the begin key of this scan operation.
    * @param end_key a copied end key of this scan operation.
    * @param guard a guard instance to protect nodes from GC.
+   * @param node_map a container of node information.
    */
   OptimisticRecordIterator(  //
       Node *node,
       const ScanKey &begin_key,
       ScanKey end_key,
-      EpochGuard &&guard)
+      EpochGuard &&guard,
+      NodeMap &node_map)
       : node_{node},
         end_key_{std::move(end_key)},
         has_key_{begin_key.has_value()},
-        guard_{std::move(guard)}
+        guard_{std::move(guard)},
+        node_map_{node_map}
   {
     if (has_key_) {
       // copy the given key
@@ -107,7 +112,11 @@ class OptimisticRecordIterator
    * @retval true if this iterator indicates a live record.
    * @retval false otherwise.
    */
-  explicit operator bool() { return HasRecord(); }
+  explicit
+  operator bool()
+  {
+    return HasRecord();
+  }
 
   /**
    * @retval 1st: a key indicated by the iterator.
@@ -278,6 +287,7 @@ class OptimisticRecordIterator
       ver_ = node_->GetVersion();
       pos_ = 0;
     }
+    node_map_.insert(std::make_pair(node_, ver_));
 
     std::tie(is_end_, end_pos_) = node_->SearchEndPositionFor(end_key_);
   }
@@ -318,6 +328,8 @@ class OptimisticRecordIterator
 
   /// the key of the current record.
   static thread_local inline auto key_ = ReserveDataRegion<Key>();  // NOLINT
+
+  NodeMap &node_map_;
 };
 
 }  // namespace dbgroup::index::b_tree::component

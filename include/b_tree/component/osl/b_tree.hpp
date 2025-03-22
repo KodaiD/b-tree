@@ -69,6 +69,9 @@ class BTree
   using BulkPromise = std::promise<BulkResult>;
   using BulkFuture = std::future<BulkResult>;
 
+  using NodeInfo = std::tuple<Node_t *, uint64_t, uint64_t>;
+  using NodeMap = std::unordered_map<Node_t *, uint64_t>;
+
   /*####################################################################################
    * Public constructors and assignment operators
    *##################################################################################*/
@@ -121,21 +124,24 @@ class BTree
    *
    * @param key a target key.
    * @param key_len the length of the target key.
+   * @param node_info a container for storing node information.
    * @retval the payload of a given key wrapped with std::optional if it is in this tree.
    * @retval std::nullopt otherwise.
    */
   auto
   Read(  //
       const Key &key,
-      [[maybe_unused]] const size_t key_len)  //
+      [[maybe_unused]] const size_t key_len,
+      NodeInfo &node_info)  //
       -> std::optional<Payload>
   {
     [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
 
     auto *node = SearchLeafNode(key);
     Payload payload{};
-    const auto rc = Node_t::Read(node, key, payload);
+    const auto [rc, version] = Node_t::Read(node, key, payload);
 
+    node_info = {node, version, version};
     if (rc == NodeRC::kKeyAlreadyInserted) return payload;
     return std::nullopt;
   }
@@ -145,18 +151,20 @@ class BTree
    *
    * @param begin_key a pair of a begin key and its openness (true=closed).
    * @param end_key a pair of an end key and its openness (true=closed).
+   * @param node_map a container for storing node information.
    * @return an iterator to access scanned records.
    */
   auto
   Scan(  //
-      const ScanKey &begin_key = std::nullopt,
-      const ScanKey &end_key = std::nullopt)  //
+      const ScanKey &begin_key,
+      const ScanKey &end_key,
+      NodeMap &node_map)  //
       -> RecordIterator_t
   {
     auto &&guard = gc_.CreateEpochGuard();
     auto *node = (begin_key) ? SearchLeafNode(std::get<0>(*begin_key)) : SearchLeftmostLeaf();
 
-    return RecordIterator_t{node, begin_key, end_key, std::move(guard)};
+    return RecordIterator_t{node, begin_key, end_key, std::move(guard), node_map};
   }
 
   /*####################################################################################
@@ -206,6 +214,7 @@ class BTree
    * @param key a target key to be inserted.
    * @param payload a target payload to be inserted.
    * @param key_len the length of a target key.
+   * @param node_info a container for storing node information.
    * @retval kSuccess if inserted.
    * @retval kKeyExist otherwise.
    */
@@ -213,26 +222,33 @@ class BTree
   Insert(  //
       const Key &key,
       const Payload &payload,
-      const size_t key_len = sizeof(Key))  //
+      const size_t key_len,
+      NodeInfo &node_info)  //
       -> ReturnCode
   {
     [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
 
     auto &&stack = SearchLeafNodeForWrite(key);
     auto *node = stack.back();
-    const auto rc = Node_t::Insert(node, key, key_len, &payload, kPayLen);
-    if (rc == NodeRC::kKeyAlreadyInserted) return kKeyExist;
+    auto [rc, ver] = Node_t::Insert(node, key, key_len, &payload, kPayLen);
+    if (rc == NodeRC::kKeyAlreadyInserted) {
+      node_info = {node, ver, ver};
+      return kKeyExist;
+    }
 
     if (rc == NodeRC::kNeedSplit) {
       // perform splitting if needed
       auto *r_node = HalfSplit(node);
       auto *target_node = node->GetValidSplitNode(key);
       const auto pos = target_node->SearchRecord(key).second;
-      target_node->InsertRecord(key, key_len, &payload, kPayLen, pos);
+      ver = target_node->InsertRecord(key, key_len, &payload, kPayLen, pos);
 
       // complete splitting by inserting a new entry
       const auto &[sep_key, sep_key_len] = target_node->GetSeparatorKey(target_node == node);
       CompleteSplit(stack, node, r_node, sep_key, sep_key_len);
+      node_info = {target_node, ver, GetPreviousVersion(ver)};
+    } else {
+      node_info = {node, ver, GetPreviousVersion(ver)};
     }
 
     return kSuccess;
@@ -441,6 +457,18 @@ class BTree
   /*####################################################################################
    * Internal utility functions
    *##################################################################################*/
+
+  /**
+   * @brief Get the previous version value based on the current version.
+   * @param ver current version value.
+   * @return previous version value.
+   */
+  static auto
+  GetPreviousVersion(const uint64_t ver)  //
+      -> uint64_t
+  {
+    return ((ver >> 18UL) - 1) << 18UL;
+  }
 
   /**
    * @brief Allocate or reuse a memory region for a base node.

@@ -647,7 +647,7 @@ class NodeVarLen
       Node *&node,
       const Key &key,
       Payload &out_payload)  //
-      -> NodeRC
+      -> std::tuple<NodeRC, uint64_t>
   {
     while (true) {
       const auto ver = CheckKeyRange(node, key);
@@ -658,7 +658,7 @@ class NodeVarLen
         memcpy(&out_payload, node->GetPayloadAddr(meta), sizeof(Payload));
       }
 
-      if (node->mutex_.HasSameVersion(ver)) return existence;
+      if (node->mutex_.HasSameVersion(ver)) return {existence, ver};
     }
   }
 
@@ -739,7 +739,7 @@ class NodeVarLen
       const size_t key_len,
       const void *payload,
       const size_t pay_len)  //
-      -> NodeRC
+      -> std::tuple<NodeRC, uint64_t>
   {
     const auto rec_len = key_len + pay_len;
 
@@ -757,7 +757,7 @@ class NodeVarLen
       const auto [existence, pos] = node->SearchRecord(key);
       if (existence == kKeyAlreadyInserted) {
         if (!node->mutex_.HasSameVersion(ver)) continue;
-        return kKeyAlreadyInserted;
+        return {kKeyAlreadyInserted, ver};
       }
 
       // there is no a live target record, so try to acquire an exclusive lock
@@ -765,14 +765,14 @@ class NodeVarLen
 
       if (existence == kKeyNotInserted) {
         // inserting a new record is required
-        if (node->NeedSplit(rec_len)) return kNeedSplit;
-        node->InsertRecord(key, key_len, payload, pay_len, pos);
+        if (node->NeedSplit(rec_len)) return {kNeedSplit, ver};
+        ver = node->InsertRecord(key, key_len, payload, pay_len, pos);
       } else {
         // there is a deleted record with the same key, so reuse it
-        node->ReuseRecord(payload, pay_len, pos);
+        ver = node->ReuseRecord(payload, pay_len, pos);
       }
 
-      return kCompleted;
+      return {kCompleted, ver};
     }
   }
 
@@ -784,14 +784,16 @@ class NodeVarLen
    * @param payload a target payload to be written.
    * @param pay_len the length of a target payload.
    * @param pos an insertion position.
+   * @retval node's version value.
    */
-  void
+  auto
   InsertRecord(  //
       const Key &key,
       const size_t key_len,
       const void *payload,
       const size_t pay_len,
-      const size_t pos)
+      const size_t pos)  //
+      -> uint64_t
   {
     const auto rec_len = key_len + pay_len;
 
@@ -808,7 +810,7 @@ class NodeVarLen
     ++record_count_;
     block_size_ += rec_len;
 
-    mutex_.UnlockX();
+    return mutex_.UnlockX();
   }
 
   /**
@@ -1518,12 +1520,14 @@ class NodeVarLen
    * @param payload a target payload to be written.
    * @param pay_len the length of a target payload.
    * @param pos the position of the deleted record.
+   * @retval node's version value.
    */
-  void
+  auto
   ReuseRecord(  //
       const void *payload,
       const size_t pay_len,
-      const size_t pos)
+      const size_t pos)  //
+      -> uint64_t
   {
     mutex_.UpgradeToX();
 
@@ -1535,7 +1539,7 @@ class NodeVarLen
     // update header information
     deleted_size_ -= meta.rec_len + kMetaLen;
 
-    mutex_.UnlockX();
+    return mutex_.UnlockX();
   }
 
   /**
