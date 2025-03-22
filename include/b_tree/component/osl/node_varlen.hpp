@@ -732,13 +732,15 @@ class NodeVarLen
    * @retval kKeyAlreadyInserted if there is a record with the same key.
    * @retval kNeedSplit if this node should be split before inserting a record.
    */
+  template <class Payload>
   static auto
   Insert(  //
       Node *&node,
       const Key &key,
       const size_t key_len,
       const void *payload,
-      const size_t pay_len)  //
+      const size_t pay_len,
+      Payload &out_payload)  //
       -> std::tuple<NodeRC, uint64_t>
   {
     const auto rec_len = key_len + pay_len;
@@ -756,6 +758,8 @@ class NodeVarLen
       // search position where this key has to be set
       const auto [existence, pos] = node->SearchRecord(key);
       if (existence == kKeyAlreadyInserted) {
+        const auto meta = node->meta_array_[pos];
+        memcpy(&out_payload, node->GetPayloadAddr(meta), sizeof(Payload));
         if (!node->mutex_.HasSameVersion(ver)) continue;
         return {kKeyAlreadyInserted, ver};
       }

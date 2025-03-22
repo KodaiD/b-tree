@@ -213,6 +213,7 @@ class BTree
    *
    * @param key a target key to be inserted.
    * @param payload a target payload to be inserted.
+   * @param out_payload a container for storing the payload of a given key.
    * @param key_len the length of a target key.
    * @param node_info a container for storing node information.
    * @retval kSuccess if inserted.
@@ -222,6 +223,7 @@ class BTree
   Insert(  //
       const Key &key,
       const Payload &payload,
+      Payload &out_payload,
       const size_t key_len,
       NodeInfo &node_info)  //
       -> ReturnCode
@@ -230,7 +232,7 @@ class BTree
 
     auto &&stack = SearchLeafNodeForWrite(key);
     auto *node = stack.back();
-    auto [rc, ver] = Node_t::Insert(node, key, key_len, &payload, kPayLen);
+    auto [rc, ver] = Node_t::Insert(node, key, key_len, &payload, kPayLen, out_payload);
     if (rc == NodeRC::kKeyAlreadyInserted) {
       node_info = {node, ver, ver};
       return kKeyExist;
