@@ -69,8 +69,8 @@ class BTree
   using BulkPromise = std::promise<BulkResult>;
   using BulkFuture = std::future<BulkResult>;
 
-  using NodeInfo = std::tuple<Node_t *, uint64_t, uint64_t>;
-  using NodeMap = std::unordered_map<Node_t *, uint64_t>;
+  using NodeInfo = std::tuple<void *, uint64_t, uint64_t>;
+  using NodeMap = std::unordered_map<void *, uint64_t>;
 
   /*####################################################################################
    * Public constructors and assignment operators
