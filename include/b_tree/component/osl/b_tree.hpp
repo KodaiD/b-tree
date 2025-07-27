@@ -215,7 +215,7 @@ class BTree
    * @param payload a target payload to be inserted.
    * @param out_payload a container for storing the payload of a given key.
    * @param key_len the length of a target key.
-   * @param node_info a container for storing node information.
+   * @param modified_nodes a vector of nodes that are modified by this operation.
    * @retval kSuccess if inserted.
    * @retval kKeyExist otherwise.
    */
@@ -225,16 +225,15 @@ class BTree
       const Payload &payload,
       Payload &out_payload,
       const size_t key_len,
-      NodeInfo &node_info)  //
-      -> ReturnCode
-  {
+      std::vector<void *> &modified_nodes) //
+    -> ReturnCode {
     [[maybe_unused]] const auto &guard = gc_.CreateEpochGuard();
 
     auto &&stack = SearchLeafNodeForWrite(key);
     auto *node = stack.back();
     auto [rc, ver] = Node_t::Insert(node, key, key_len, &payload, kPayLen, out_payload);
     if (rc == NodeRC::kKeyAlreadyInserted) {
-      node_info = {node, ver, ver};
+      modified_nodes.emplace_back(node);
       return kKeyExist;
     }
 
@@ -248,9 +247,9 @@ class BTree
       // complete splitting by inserting a new entry
       const auto &[sep_key, sep_key_len] = target_node->GetSeparatorKey(target_node == node);
       CompleteSplit(stack, node, r_node, sep_key, sep_key_len);
-      node_info = {target_node, ver, GetPreviousVersion(ver)};
+      modified_nodes.emplace_back(target_node);
     } else {
-      node_info = {node, ver, GetPreviousVersion(ver)};
+      modified_nodes.emplace_back(node);
     }
 
     return kSuccess;
